@@ -1,0 +1,373 @@
+// Variables used by Scriptable.
+// These must be at the very top of the file. Do not edit.
+// icon-color: gray; icon-glyph: magic;
+// ═══════════════════════════════════════════
+//  STELLAR DASHBOARD - Widget Scriptable
+// ═══════════════════════════════════════════
+
+const API_URL = "https://enoxys.fr/stellar/api/me?token=a96fabb2-2c59-4a14-aa20-7ed593f8d23c";
+
+const C = {
+  bg:      new Color("#0d1117"),
+  card:    new Color("#161b22"),
+  card2:   new Color("#1c2128"),
+  ore:     new Color("#f0a500"),
+  crystal: new Color("#00bcd4"),
+  helium:  new Color("#e040fb"),
+  text:    new Color("#e6edf3"),
+  muted:   new Color("#8b949e"),
+  green:   new Color("#3fb950"),
+  yellow:  new Color("#d29922"),
+  orange:  new Color("#e8873a"),
+  red:     new Color("#f85149"),
+  white:   new Color("#ffffff"),
+};
+
+// ── Dimensions ───────────────────────────────────────────────────
+const COL_NAME_W   = 58;
+const COL_RES_W    = 82;
+const SEP_W        = 1;
+const ROW_H_EMP    = 32;
+const ROW_H_COLONY = 26;
+
+function fmt(n) {
+  if (n == null || isNaN(n)) return "0";
+  if (n >= 1_000_000_000) return (n / 1_000_000_000 >= 100 ? Math.round(n / 1_000_000_000) : (n / 1_000_000_000).toFixed(1)) + "G";
+  if (n >= 1_000_000) return (n / 1_000_000 >= 100 ? Math.round(n / 1_000_000) : (n / 1_000_000).toFixed(1)) + "M";
+  if (n >= 1_000)     return (n / 1_000 >= 100 ? Math.round(n / 1_000) : (n / 1_000).toFixed(1)) + "k";
+  return String(Math.round(n));
+}
+
+
+function fmtPct(amount, capacity) {
+  if (!capacity) return "0%";
+  return Math.round((amount / capacity) * 100) + "%";
+}
+
+function currentAmount(amount, capacity, prodPerHour, elapsedHours) {
+  if (prodPerHour <= 0) return amount;
+  const projected = amount + prodPerHour * elapsedHours;
+  return Math.min(projected, capacity);
+}
+
+function timeToFull(amount, capacity, prodPerHour) {
+  if (prodPerHour <= 0) return "∞";
+  const remaining = capacity - amount;
+  if (remaining <= 0) return "FULL";
+  const hours = remaining / prodPerHour;
+  if (hours > 24 * 30) return ">30j";
+  const h = Math.floor(hours);
+  const m = Math.floor((hours - h) * 60);
+  if (h === 0) return `${m}m`;
+  if (h >= 24) {
+    const d = Math.floor(h / 24), rh = h % 24;
+    return rh ? `${d}j${rh}h` : `${d}j`;
+  }
+  return `${h}h${m > 0 ? m + "m" : ""}`;
+}
+
+function fillColorByTTF(amount, capacity, prodPerHour) {
+  if (prodPerHour <= 0) return C.green;
+  const remaining = capacity - amount;
+  if (remaining <= 0) return C.red;
+  const hours = remaining / prodPerHour;
+  if (hours <= 6)  return C.red;
+  if (hours <= 24) return C.orange;
+  return C.green;
+}
+
+async function fetchData() {
+  const req = new Request(API_URL);
+  req.timeoutInterval = 12;
+  req.headers = { "Cache-Control": "no-cache", "Pragma": "no-cache" };
+  return await req.loadJSON();
+}
+
+function calcTotals(colonies, elapsedHours) {
+  const t = {
+    ore:     { amount: 0, capacity: 0, prod: 0 },
+    crystal: { amount: 0, capacity: 0, prod: 0 },
+    helium:  { amount: 0, capacity: 0, prod: 0 },
+  };
+  for (const col of colonies) {
+    const s = col.storage    ?? {};
+    const p = col.production ?? {};
+    for (const [key, tk] of [["ore","ore"],["crystal","crystal"],["helium3","helium"]]) {
+      const cap = s[key]?.capacity ?? 0;
+      const amt = currentAmount(s[key]?.amount ?? 0, cap, p[key] ?? 0, elapsedHours);
+      t[tk].amount   += amt;
+      t[tk].capacity += cap;
+      t[tk].prod     += p[key] ?? 0;
+    }
+  }
+  return t;
+}
+
+// ── Helpers colonnes ─────────────────────────────────────────────
+function addCol(container, width) {
+  const col = container.addStack();
+  col.layoutVertically();
+  col.size = new Size(width, 0);
+  return col;
+}
+
+function addSep(container, height) {
+  const sep = container.addStack();
+  sep.layoutVertically();
+  sep.size = new Size(SEP_W, height);
+  sep.backgroundColor = new Color("#30363d");
+}
+
+// ── Cellule Nom ──────────────────────────────────────────────────
+function addNameCell(col, name, position, nameColor, rowH, bg, isBold) {
+  const cell = col.addStack();
+  cell.layoutVertically();
+  cell.centerAlignContent();
+  cell.backgroundColor = bg;
+  cell.cornerRadius = 4;
+  cell.size = new Size(COL_NAME_W, rowH);
+  cell.setPadding(0, 8, 0, 4);
+
+  const nameT = cell.addText(name);
+  nameT.font = isBold ? Font.boldSystemFont(8) : Font.boldSystemFont(7);
+  nameT.textColor = nameColor;
+  nameT.lineLimit = 1;
+  nameT.minimumScaleFactor = 0.6;
+  nameT.centerAlignText();
+
+  if (position) {
+    const posT = cell.addText(position);
+    posT.font = Font.systemFont(6);
+    posT.textColor = C.muted;
+    posT.centerAlignText();
+  }
+}
+
+// ── Cellule Ressource ────────────────────────────────────────────
+function addResCell(col, color, icon, prodText, pct, ttf, fc, rowH, bg) {
+  const cell = col.addStack();
+  cell.layoutVertically();
+  cell.centerAlignContent();
+  cell.backgroundColor = bg;
+  cell.cornerRadius = 4;
+  cell.size = new Size(COL_RES_W, rowH);
+  cell.setPadding(0, 0, 0, 0);
+
+  // Ligne 1 : icône + production
+  const l1 = cell.addStack();
+  l1.layoutHorizontally();
+  l1.centerAlignContent();
+  l1.addSpacer();
+  const icT = l1.addText(icon + " ");
+  icT.font = Font.systemFont(8);
+  icT.textColor = color;
+  const prodT = l1.addText(prodText);
+  prodT.font = Font.boldSystemFont(9);
+  prodT.textColor = color;
+  l1.addSpacer();
+
+  cell.addSpacer(1);
+
+  // Ligne 2 : % + TTF
+  const l2 = cell.addStack();
+  l2.layoutHorizontally();
+  l2.centerAlignContent();
+  l2.addSpacer();
+  const pctT = l2.addText(pct + " ");
+  pctT.font = Font.systemFont(7);
+  pctT.textColor = fc;
+  const ttfT = l2.addText("⏱ " + ttf);
+  ttfT.font = Font.systemFont(7);
+  ttfT.textColor = fc;
+  l2.addSpacer();
+}
+
+// ── Ligne EMPIRE ─────────────────────────────────────────────────
+function addEmpireRow(w, totals) {
+  const row = w.addStack();
+  row.layoutHorizontally();
+  row.centerAlignContent();
+  row.addSpacer();
+
+  const col0 = addCol(row, COL_NAME_W);
+  addNameCell(col0, "TOTAL", "", C.white, ROW_H_EMP, C.card, true);
+
+  addSep(row, ROW_H_EMP);
+
+  const col1 = addCol(row, COL_RES_W);
+  addResCell(col1, C.ore, "⛏︎",
+    fmt(totals.ore.prod) + "/h",
+    fmtPct(totals.ore.amount, totals.ore.capacity),
+    timeToFull(totals.ore.amount, totals.ore.capacity, totals.ore.prod),
+    fillColorByTTF(totals.ore.amount, totals.ore.capacity, totals.ore.prod),
+    ROW_H_EMP, C.card
+  );
+
+  addSep(row, ROW_H_EMP);
+
+  const col2 = addCol(row, COL_RES_W);
+  addResCell(col2, C.crystal, "◆︎",
+    fmt(totals.crystal.prod) + "/h",
+    fmtPct(totals.crystal.amount, totals.crystal.capacity),
+    timeToFull(totals.crystal.amount, totals.crystal.capacity, totals.crystal.prod),
+    fillColorByTTF(totals.crystal.amount, totals.crystal.capacity, totals.crystal.prod),
+    ROW_H_EMP, C.card
+  );
+
+  addSep(row, ROW_H_EMP);
+
+  const col3 = addCol(row, COL_RES_W);
+  addResCell(col3, C.helium, "⚛︎",
+    fmt(totals.helium.prod) + "/h",
+    fmtPct(totals.helium.amount, totals.helium.capacity),
+    timeToFull(totals.helium.amount, totals.helium.capacity, totals.helium.prod),
+    fillColorByTTF(totals.helium.amount, totals.helium.capacity, totals.helium.prod),
+    ROW_H_EMP, C.card
+  );
+
+  row.addSpacer();
+}
+
+// ── Tableau COLONIES ─────────────────────────────────────────────
+function addColoniesTable(w, colonies, elapsedHours) {
+  const totalH = ROW_H_COLONY * colonies.length + (colonies.length - 1);
+
+  const table = w.addStack();
+  table.layoutHorizontally();
+  table.centerAlignContent();
+  table.addSpacer();
+
+  const col0 = addCol(table, COL_NAME_W);
+  addSep(table, totalH);
+  const col1 = addCol(table, COL_RES_W);
+  addSep(table, totalH);
+  const col2 = addCol(table, COL_RES_W);
+  addSep(table, totalH);
+  const col3 = addCol(table, COL_RES_W);
+
+  table.addSpacer();
+
+  for (let i = 0; i < colonies.length; i++) {
+    const col = colonies[i];
+    const s   = col.storage    ?? {};
+    const p   = col.production ?? {};
+    const bg  = i % 2 === 0 ? C.card : C.card2;
+
+    const oreCap = s.ore?.capacity     ?? 1;
+    const cryCap = s.crystal?.capacity ?? 1;
+    const helCap = s.helium3?.capacity ?? 1;
+    const oreAmt = currentAmount(s.ore?.amount     ?? 0, oreCap, p.ore     ?? 0, elapsedHours);
+    const cryAmt = currentAmount(s.crystal?.amount ?? 0, cryCap, p.crystal ?? 0, elapsedHours);
+    const helAmt = currentAmount(s.helium3?.amount ?? 0, helCap, p.helium3 ?? 0, elapsedHours);
+
+    if (i > 0) {
+      col0.addSpacer(1);
+      col1.addSpacer(1);
+      col2.addSpacer(1);
+      col3.addSpacer(1);
+    }
+
+    addNameCell(col0, col.name ?? "—", col.position ?? "", C.text, ROW_H_COLONY, bg, false);
+
+    addResCell(col1, C.ore, "⛏︎",
+      fmt(p.ore ?? 0) + "/h",
+      fmtPct(oreAmt, oreCap),
+      timeToFull(oreAmt, oreCap, p.ore ?? 0),
+      fillColorByTTF(oreAmt, oreCap, p.ore ?? 0),
+      ROW_H_COLONY, bg
+    );
+
+    addResCell(col2, C.crystal, "◆︎",
+      fmt(p.crystal ?? 0) + "/h",
+      fmtPct(cryAmt, cryCap),
+      timeToFull(cryAmt, cryCap, p.crystal ?? 0),
+      fillColorByTTF(cryAmt, cryCap, p.crystal ?? 0),
+      ROW_H_COLONY, bg
+    );
+
+    addResCell(col3, C.helium, "⚛︎",
+      fmt(p.helium3 ?? 0) + "/h",
+      fmtPct(helAmt, helCap),
+      timeToFull(helAmt, helCap, p.helium3 ?? 0),
+      fillColorByTTF(helAmt, helCap, p.helium3 ?? 0),
+      ROW_H_COLONY, bg
+    );
+  }
+}
+
+// ── Widget principal ──────────────────────────────────────────────
+async function buildWidget(data) {
+  const colonies     = data.coloniesData ?? [];
+  const lastSeen     = new Date(data.lastSeen);
+  const elapsedHours = (Date.now() - lastSeen.getTime()) / 3_600_000;
+  const agoMin       = Math.round(elapsedHours * 60);
+  const totals       = calcTotals(colonies, elapsedHours);
+
+  const w = new ListWidget();
+  w.backgroundColor = C.bg;
+  w.setPadding(10, 4, 10, 4);
+  w.refreshAfterDate = new Date(Date.now() + 10 * 60 * 1000);
+
+  // ── HEADER ──
+  const hdr = w.addStack();
+  hdr.layoutHorizontally();
+  hdr.centerAlignContent();
+  
+  hdr.addSpacer();
+
+  const htitle = hdr.addText("✦ STELLAR DOMINION");
+  htitle.font = Font.boldSystemFont(9);
+  htitle.textColor = C.white;
+
+  const hspace = hdr.addText(`             `);
+
+  const hinfo = hdr.addText(`${data.name}  ·  Niv.${data.level}  ·  ↻ ${agoMin}min          `);
+  hinfo.font = Font.systemFont(8);
+  hinfo.textColor = C.muted;
+
+  w.addSpacer(2);
+
+  // ── EMPIRE ──
+  const empLabel = w.addText("   🌌 EMPIRE — stocks & productions");
+  empLabel.font = Font.boldSystemFont(7);
+  empLabel.textColor = C.muted;
+  w.addSpacer(2);
+
+  addEmpireRow(w, totals);
+
+  w.addSpacer(2);
+
+  // ── COLONIES ──
+  const colLabel = w.addText("   🪐 COLONIES");
+  colLabel.font = Font.boldSystemFont(7);
+  colLabel.textColor = C.muted;
+  w.addSpacer(2);
+
+  addColoniesTable(w, colonies, elapsedHours);
+
+  return w;
+}
+
+async function main() {
+  let data;
+  try {
+    data = await fetchData();
+  } catch (e) {
+    const w = new ListWidget();
+    w.backgroundColor = C.bg;
+    w.setPadding(14, 14, 14, 14);
+    const err = w.addText("⚠️ " + e.message);
+    err.textColor = C.red;
+    err.font = Font.systemFont(11);
+    Script.setWidget(w);
+    Script.complete();
+    return;
+  }
+
+  const widget = await buildWidget(data);
+  if (!config.runningInWidget) await widget.presentLarge();
+  Script.setWidget(widget);
+  Script.complete();
+}
+
+await main();
