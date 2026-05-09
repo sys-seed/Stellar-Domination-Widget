@@ -5,7 +5,7 @@
 //  STELLAR DASHBOARD - Widget Scriptable
 // ═══════════════════════════════════════════
 
-const API_URL = "https://enoxys.fr/stellar/api/me?token=a96fabb2-2c59-4a14-aa20-7ed593f8d23c";
+const API_URL = "https://enoxys.fr/stellar/api/me?token=YOURAPIKEY";
 
 const C = {
   bg:      new Color("#0d1117"),
